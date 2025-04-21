@@ -97,6 +97,7 @@ impl Client {
             // 4. Stream raw NDJSON without chunked encoding
             let mut chunk = [0u8; 4096];
             let mut buffer = Vec::new();
+            let mut full_collected = String::new();
             loop {
                 let bytes_read = match llm_stream.read(&mut chunk).await {
                     Ok(0) => {
@@ -120,6 +121,7 @@ impl Client {
                 buffer.extend_from_slice(&chunk[..bytes_read]);
                 if buffer.windows(2).any(|w| w == b"}\n") {
                     if let Ok(text) = String::from_utf8(buffer.clone()) {
+                        println!("text : {}", text);
                         if text.contains("\"done\":true") {
                             println!("Detected stream end");
                             break;
@@ -127,14 +129,68 @@ impl Client {
                     }
                     buffer.clear();
                 }
+
+                // 4. Collected
+                let collected = Self::collect_responses(&chunk)
+                    .await
+                    .expect("Error Collect");
+                full_collected += &collected;
             }
             client_stream.write_all(b"0\r\n\r\n").await?;
             llm_stream.shutdown().await?;
-            println!("end");
+            println!("end, reponse full:");
+            println!("{}", full_collected);
         }
         // 4. Clean shutdown
         client_stream.shutdown().await?;
         println!("Connection closed properly");
         Ok(())
+    }
+
+    async fn collect_responses(chunk: &[u8; 4096]) -> Result<String, Box<dyn Error>> {
+        let mut response_buffer = String::new();
+        let mut json_buffer = Vec::new();
+        let mut in_response = false;
+        let mut escape_next = false;
+        let mut response_bytes = Vec::new();
+        for &byte in chunk {
+            if in_response {
+                if escape_next {
+                    // Handle escaped characters
+                    response_bytes.push(match byte {
+                        b'n' => b'\n',
+                        b'r' => b'\r',
+                        b't' => b'\t',
+                        b'0' => b'\0',
+                        _ => byte, // Includes \" and \\
+                    });
+                    escape_next = false;
+                } else if byte == b'\\' {
+                    escape_next = true;
+                } else if byte == b'"' {
+                    // End of response value
+                    in_response = false;
+                    if let Ok(text) = String::from_utf8(response_bytes.clone()) {
+                        response_buffer.push_str(&text);
+                    }
+                    response_bytes.clear();
+                } else {
+                    response_bytes.push(byte);
+                }
+            } else {
+                // Look for "response":" pattern
+                json_buffer.push(byte);
+                if json_buffer.ends_with(b"\"response\":\"") {
+                    in_response = true;
+                    json_buffer.clear();
+                }
+
+                // Check for stream end
+                if json_buffer.ends_with(b"\"done\":true") {
+                    break;
+                }
+            }
+        }
+        Ok(response_buffer)
     }
 }
