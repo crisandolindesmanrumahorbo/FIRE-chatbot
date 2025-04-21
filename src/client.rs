@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -6,7 +8,11 @@ use tokio::{
 pub struct Client {}
 
 impl Client {
-    pub async fn perform(is_stream: bool, json_body: &str, mut client_stream: TcpStream) {
+    pub async fn perform(
+        is_stream: bool,
+        json_body: &str,
+        mut client_stream: TcpStream,
+    ) -> Result<(), Box<dyn Error>> {
         let request;
         if !is_stream {
             request = format!(
@@ -64,35 +70,71 @@ impl Client {
                 .expect("error write");
             println!("written");
 
-            let mut headers = [0u8; 1024];
-            let header_len = llm_stream.read(&mut headers).await.expect("header error");
-            client_stream
-                .write_all(&headers[..header_len])
-                .await
-                .expect("Error write once");
+            // 1. Read Ollama's headers first
+            let mut ollama_headers = Vec::new();
+            let mut header_ended = false;
+            let mut buf = [0u8; 1];
 
-            // Process streaming response
-            let mut chunk = [0; 1024];
+            // Read until \r\n\r\n
+            while !header_ended && llm_stream.read(&mut buf).await? > 0 {
+                ollama_headers.push(buf[0]);
+                if ollama_headers.ends_with(b"\r\n\r\n") {
+                    header_ended = true;
+                }
+            }
+
+            // 2. Only inject CORS, don't modify other headers
+            let mut headers = String::from_utf8(ollama_headers)?;
+            headers = headers.replace(
+                "HTTP/1.1 200 OK\r\n",
+                "HTTP/1.1 200 OK\r\n\
+            Access-Control-Allow-Origin: *\r\n",
+            );
+
+            // 3. Send modified headers
+            client_stream.write_all(headers.as_bytes()).await?;
+
+            // 4. Stream raw NDJSON without chunked encoding
+            let mut chunk = [0u8; 4096];
+            let mut buffer = Vec::new();
             loop {
                 let bytes_read = match llm_stream.read(&mut chunk).await {
                     Ok(0) => {
-                        println!("closed llm connection");
+                        println!("Ollama connection closed");
                         break;
-                    } // Connection closed by Ollama
-                    Ok(n) => n,
+                    }
+                    Ok(n) => {
+                        println!("Forwarding {} bytes", n);
+                        n
+                    }
                     Err(e) => {
                         eprintln!("Read error: {}", e);
                         break;
                     }
                 };
-
-                client_stream
-                    .write_all(&chunk[..bytes_read])
-                    .await
-                    .expect("Eerror chunk write");
-
-                let _ = client_stream.flush().await;
+                if let Err(e) = client_stream.write_all(&chunk[..bytes_read]).await {
+                    eprintln!("Write error: {}", e);
+                    break;
+                }
+                // 3. Check for termination marker
+                buffer.extend_from_slice(&chunk[..bytes_read]);
+                if buffer.windows(2).any(|w| w == b"}\n") {
+                    if let Ok(text) = String::from_utf8(buffer.clone()) {
+                        if text.contains("\"done\":true") {
+                            println!("Detected stream end");
+                            break;
+                        }
+                    }
+                    buffer.clear();
+                }
             }
+            client_stream.write_all(b"0\r\n\r\n").await?;
+            llm_stream.shutdown().await?;
+            println!("end");
         }
+        // 4. Clean shutdown
+        client_stream.shutdown().await?;
+        println!("Connection closed properly");
+        Ok(())
     }
 }
