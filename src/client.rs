@@ -70,127 +70,85 @@ impl Client {
                 .expect("error write");
             println!("written");
 
-            // 1. Read Ollama's headers first
-            let mut ollama_headers = Vec::new();
-            let mut header_ended = false;
-            let mut buf = [0u8; 1];
+            let cors_headers = "HTTP/1.1 200 OK\r\n\
+            Access-Control-Allow-Origin: *\r\n\
+            Content-Type: text/plain\r\n\
+            Transfer-Encoding: chunked\r\n\
+            \r\n";
 
-            // Read until \r\n\r\n
-            while !header_ended && llm_stream.read(&mut buf).await? > 0 {
-                ollama_headers.push(buf[0]);
-                if ollama_headers.ends_with(b"\r\n\r\n") {
-                    header_ended = true;
-                }
-            }
+            client_stream.write_all(cors_headers.as_bytes()).await?;
 
-            // 2. Only inject CORS, don't modify other headers
-            let mut headers = String::from_utf8(ollama_headers)?;
-            headers = headers.replace(
-                "HTTP/1.1 200 OK\r\n",
-                "HTTP/1.1 200 OK\r\n\
-            Access-Control-Allow-Origin: *\r\n",
-            );
-
-            // 3. Send modified headers
-            client_stream.write_all(headers.as_bytes()).await?;
-
-            // 4. Stream raw NDJSON without chunked encoding
-            let mut chunk = [0u8; 4096];
-            let mut buffer = Vec::new();
+            let mut response_buffer = String::new();
             let mut full_collected = String::new();
+            let mut chunk = [0u8; 4096];
+            let mut json_buffer = Vec::new();
+            let mut in_response = false;
+            let mut escape_next = false;
+            let mut response_bytes = Vec::new();
             loop {
                 let bytes_read = match llm_stream.read(&mut chunk).await {
                     Ok(0) => {
                         println!("Ollama connection closed");
                         break;
                     }
-                    Ok(n) => {
-                        println!("Forwarding {} bytes", n);
-                        n
-                    }
+                    Ok(n) => n,
                     Err(e) => {
                         eprintln!("Read error: {}", e);
                         break;
                     }
                 };
-                if let Err(e) = client_stream.write_all(&chunk[..bytes_read]).await {
-                    eprintln!("Write error: {}", e);
-                    break;
-                }
-                // 3. Check for termination marker
-                buffer.extend_from_slice(&chunk[..bytes_read]);
-                if buffer.windows(2).any(|w| w == b"}\n") {
-                    if let Ok(text) = String::from_utf8(buffer.clone()) {
-                        println!("text : {}", text);
-                        if text.contains("\"done\":true") {
-                            println!("Detected stream end");
+
+                for &byte in &chunk[..bytes_read] {
+                    if in_response {
+                        if escape_next {
+                            // Handle escaped characters
+                            response_bytes.push(match byte {
+                                b'n' => b'\n',
+                                b'r' => b'\r',
+                                b't' => b'\t',
+                                b'0' => b'\0',
+                                _ => byte, // Includes \" and \\
+                            });
+                            escape_next = false;
+                        } else if byte == b'\\' {
+                            escape_next = true;
+                        } else if byte == b'"' {
+                            // End of response value
+                            in_response = false;
+                            if let Ok(text) = String::from_utf8(response_bytes.clone()) {
+                                response_buffer.push_str(&text);
+                                full_collected.push_str(&text);
+
+                                // Send chunk with just the response text
+                                let chunk_header = format!("{:x}\r\n", text.len());
+                                client_stream.write_all(chunk_header.as_bytes()).await?;
+                                client_stream.write_all(text.as_bytes()).await?;
+                                client_stream.write_all(b"\r\n").await?;
+                            }
+                            response_bytes.clear();
+                        } else {
+                            response_bytes.push(byte);
+                        }
+                    } else {
+                        // Look for "response":" pattern
+                        json_buffer.push(byte);
+                        if json_buffer.ends_with(b"\"response\":\"") {
+                            in_response = true;
+                            json_buffer.clear();
+                        }
+
+                        // Check for stream end
+                        if json_buffer.ends_with(b"\"done\":true") {
+                            println!("done");
                             break;
                         }
                     }
-                    buffer.clear();
                 }
-
-                // 4. Collected
-                let collected = Self::collect_responses(&chunk)
-                    .await
-                    .expect("Error Collect");
-                full_collected += &collected;
             }
-            client_stream.write_all(b"0\r\n\r\n").await?;
-            llm_stream.shutdown().await?;
-            println!("end, reponse full:");
-            println!("{}", full_collected);
         }
         // 4. Clean shutdown
         client_stream.shutdown().await?;
         println!("Connection closed properly");
         Ok(())
-    }
-
-    async fn collect_responses(chunk: &[u8; 4096]) -> Result<String, Box<dyn Error>> {
-        let mut response_buffer = String::new();
-        let mut json_buffer = Vec::new();
-        let mut in_response = false;
-        let mut escape_next = false;
-        let mut response_bytes = Vec::new();
-        for &byte in chunk {
-            if in_response {
-                if escape_next {
-                    // Handle escaped characters
-                    response_bytes.push(match byte {
-                        b'n' => b'\n',
-                        b'r' => b'\r',
-                        b't' => b'\t',
-                        b'0' => b'\0',
-                        _ => byte, // Includes \" and \\
-                    });
-                    escape_next = false;
-                } else if byte == b'\\' {
-                    escape_next = true;
-                } else if byte == b'"' {
-                    // End of response value
-                    in_response = false;
-                    if let Ok(text) = String::from_utf8(response_bytes.clone()) {
-                        response_buffer.push_str(&text);
-                    }
-                    response_bytes.clear();
-                } else {
-                    response_bytes.push(byte);
-                }
-            } else {
-                // Look for "response":" pattern
-                json_buffer.push(byte);
-                if json_buffer.ends_with(b"\"response\":\"") {
-                    in_response = true;
-                    json_buffer.clear();
-                }
-
-                // Check for stream end
-                if json_buffer.ends_with(b"\"done\":true") {
-                    break;
-                }
-            }
-        }
-        Ok(response_buffer)
     }
 }
