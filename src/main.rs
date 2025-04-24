@@ -1,75 +1,38 @@
-use std::io::Error;
-use stockbit_chatbot::client::Client;
+use stockbit_chatbot::server::Server;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    signal::unix::{SignalKind, signal},
+    sync::oneshot,
 };
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
-    let listener = TcpListener::bind("localhost:8080")
-        .await
-        .expect("bind port error");
-    println!("Server running on http://localhost:8080");
+async fn main() -> Result<(), std::io::Error> {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    loop {
-        let (stream, _) = listener.accept().await.expect("error accept");
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(stream).await {
-                eprintln!("connection error {}", e);
-            }
-        });
-    }
+    let server_handle = tokio::spawn(async move {
+        let _ = Server::start(shutdown_rx).await;
+    });
+
+    gracefully_shutdown(shutdown_tx, server_handle).await;
+
+    Ok(())
 }
 
-async fn handle_client(mut stream: TcpStream) -> Result<(), Error> {
-    let mut buffer = [0; 1024];
-    // let size = stream.read(&mut buffer).await?;
-    match stream.read(&mut buffer).await {
-        Ok(size) => {
-            let request = String::from_utf8_lossy(&buffer[..size]);
-            if request.starts_with("OPTIONS") {
-                let response = "HTTP/1.1 204 No Content\r\n\
-            Access-Control-Allow-Origin: *\r\n\
-            Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n\
-            Access-Control-Allow-Headers: Content-Type\r\n\
-            Access-Control-Max-Age: 86400\r\n\
-            \r\n";
+async fn gracefully_shutdown(
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    server_handle: tokio::task::JoinHandle<()>,
+) {
+    let mut signal_terminate = signal(SignalKind::terminate()).unwrap();
+    let mut signal_interrupt = signal(SignalKind::interrupt()).unwrap();
 
-                stream.write_all(response.as_bytes()).await?;
-                return Ok(());
+    tokio::select! {
+        _ = signal_terminate.recv() => {
+            println!("Shutdown signal_terminate received");
+        },
+        _ = signal_interrupt.recv() => {
+                println!("Shutdown signal_interrupt received");
             }
-            if request.starts_with("POST /chatbot") {
-                // let response_headers = "HTTP/1.1 200 OK\r\n\
-                // Access-Control-Allow-Origin: *\r\n\
-                // Content-Type: text/plain\r\n\
-                // Transfer-Encoding: chunked\r\n\
-                // \r\n";
-                //
-                // stream.write_all(response_headers.as_bytes()).await?;
-                println!("request {}", request);
-                let mut parts = request.split("\r\n\r\n");
-                let _ = parts.next().expect("no req head ");
-                let body = parts.next().expect("no body");
-                Client::perform(true, body, stream).await;
-            } else {
-                stream
-                    .write_all(
-                        format!("{}{}", "HTTP/1.1 404 Not Found\r\n\r\n", "404 Not Found")
-                            .as_bytes(),
-                    )
-                    .await
-                    .expect("Error request url");
-            }
-        }
-        Err(_) => {
-            stream
-                .write_all(
-                    format!("{}{}", "HTTP/1.1 404 Not Found\r\n\r\n", "404 Not Found").as_bytes(),
-                )
-                .await
-                .expect("Error request url");
-        }
     }
-    Ok(())
+    let _ = shutdown_tx.send(());
+    let _ = server_handle.await;
+    println!("shutdown completed");
 }
