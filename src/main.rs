@@ -1,4 +1,4 @@
-use stockbit_chatbot::server::Server;
+use stockbit_chatbot::{cfg::init_config, server::Server};
 use tokio::{
     signal::unix::{SignalKind, signal},
     sync::oneshot,
@@ -6,6 +6,8 @@ use tokio::{
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
+    init_config();
+
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let server_handle = tokio::spawn(async move {
