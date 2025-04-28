@@ -188,6 +188,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "request-http-parser"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4038b12f9385688c6b41279cc75bb2a4a5ff5f7e1e87c52305e5456af7b0a805"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -268,6 +277,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dotenvy",
+ "request-http-parser",
  "serde_json",
  "tokio",
 ]

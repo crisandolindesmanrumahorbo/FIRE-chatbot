@@ -1,8 +1,8 @@
+use request_http_parser::parser::Request;
 use tokio::io::AsyncWrite;
 
 use crate::{
     llama_client::LlamaClient,
-    req::Request,
     server::{BAD_REQUEST, OK_RESPONSE},
 };
 

@@ -1,11 +1,9 @@
-use crate::{
-    chatbot::ChatbotService,
-    req::{Method, Request},
-};
+use crate::chatbot::ChatbotService;
 use anyhow::{Context, Result};
+use request_http_parser::parser::{Method, Request};
 use std::error::Error;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpListener,
     sync::oneshot::Receiver,
 };
@@ -50,14 +48,30 @@ impl Server {
     }
 
     pub async fn handle_client<Reader, Writer>(
-        reader: Reader,
+        mut reader: Reader,
         mut writer: Writer,
     ) -> Result<(), Box<dyn Error>>
     where
         Reader: AsyncRead + Unpin,
         Writer: AsyncWrite + Unpin,
     {
-        let request = match Request::new(reader).await {
+        let mut buffer = [0; 1024];
+        let size = reader
+            .read(&mut buffer)
+            .await
+            .context("Failed to read stream")?;
+        if size >= 1024 {
+            let _ = writer
+                .write_all(format!("{}{}", BAD_REQUEST, "Requets too large").as_bytes())
+                .await
+                .context("Failed to write");
+
+            let _ = writer.flush().await.context("Failed to flush");
+
+            return Ok(());
+        }
+        let request = String::from_utf8_lossy(&buffer[..size]);
+        let request = match Request::new(&request) {
             Ok(req) => req,
             Err(e) => {
                 println!("{}", e);
