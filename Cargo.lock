@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "request-http-parser"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4038b12f9385688c6b41279cc75bb2a4a5ff5f7e1e87c52305e5456af7b0a805"
+checksum = "e672897189d120a4c34055f2f0a281f50fd8d1454576d1fc216648c834d0da46"
 dependencies = [
  "anyhow",
 ]
