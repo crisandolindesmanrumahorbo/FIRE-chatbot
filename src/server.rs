@@ -1,3 +1,4 @@
+use crate::cfg::get_config;
 use crate::chatbot::ChatbotService;
 use crate::http_client::{HttpClient, HttpMethod};
 use crate::tele::{GetUpdatesResp, TeleMessage};
@@ -111,9 +112,11 @@ impl Server {
     }
 
     pub async fn handle_tele_polling(mut update_id: i64) -> i64 {
-        println!("UPDATE_ID:\n{:?}", update_id);
+        println!("Listen tele to update:\n{:?}", update_id);
         let url = format!(
-            "https://api.telegram.org/bot7994038141:AAFIcLqsTY_xI-eAsv32l1-JEAVTx9Y8-Ks/getUpdates?offset={}",
+            "{}/bot{}/getUpdates?offset={}",
+            get_config().tele_url,
+            get_config().tele_token,
             update_id
         );
         let response = HttpClient::fetch::<()>(HttpMethod::GET, url, None).await;
@@ -138,10 +141,12 @@ impl Server {
             text,
         };
         let url = format!(
-            "https://api.telegram.org/bot7994038141:AAFIcLqsTY_xI-eAsv32l1-JEAVTx9Y8-Ks/sendMessage"
+            "{}/bot{}/sendMessage",
+            get_config().tele_url,
+            get_config().tele_token
         );
         let response = HttpClient::fetch::<TeleMessage>(HttpMethod::POST, url, Some(body)).await;
-        println!("Response after post:\n{:?}", response);
+        println!("Response latest message:\n{:?}", response);
         update_id
     }
 }

@@ -5,6 +5,8 @@ use std::{
 
 pub struct Config {
     pub llama_url: &'static str,
+    pub tele_url: &'static str,
+    pub tele_token: &'static str,
 }
 
 static CONFIG: AtomicPtr<Config> = AtomicPtr::new(ptr::null_mut());
@@ -15,6 +17,16 @@ pub fn init_config() {
         llama_url: Box::leak(
             env::var("LLAMA_URL")
                 .expect("LLAMA_URL must be set")
+                .into_boxed_str(),
+        ),
+        tele_url: Box::leak(
+            env::var("TELE_URL")
+                .expect("TELE_URL must be set")
+                .into_boxed_str(),
+        ),
+        tele_token: Box::leak(
+            env::var("TELE_TOKEN")
+                .expect("TELE_TOKEN must be set")
                 .into_boxed_str(),
         ),
     });
