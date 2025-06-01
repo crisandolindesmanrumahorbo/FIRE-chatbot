@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct TeleMessage {
+    pub chat_id: i64,
+    pub text: String,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GetUpdatesResp {
     pub ok: bool,
