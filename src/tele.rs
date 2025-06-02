@@ -1,5 +1,25 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct OrderForm {
+    pub symbol: String,
+    pub side: char,
+    pub price: u32,
+    pub lot: u32,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct LlamaResponse {
+    pub response: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct LlamaRequest {
+    pub model: String,
+    pub prompt: String,
+    pub stream: bool,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TeleMessage {
     pub chat_id: i64,

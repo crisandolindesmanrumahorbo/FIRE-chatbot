@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
 };
 use url::Url;
@@ -19,7 +19,7 @@ impl HttpClient {
     pub async fn fetch<T: Serialize>(method: HttpMethod, url: String, body: Option<T>) -> Response {
         let parsed = Url::parse(&url).expect("Invalid Url");
 
-        let _scheme = parsed.scheme();
+        let scheme = parsed.scheme();
         let host = parsed.host_str().expect("error url host");
         let port = parsed.port_or_known_default().expect("error url port");
         let path = parsed.path();
@@ -27,49 +27,71 @@ impl HttpClient {
             Some(query) => format!("{}?{}", path, query),
             None => path.to_string(),
         };
-        let conn = TcpStream::connect((host, port))
-            .await
-            .expect(format!("Failed to handshake to {}", url).as_str());
-        let tls_connector = native_tls::TlsConnector::new().expect("error init tls");
-        let connector = tokio_native_tls::TlsConnector::from(tls_connector);
+        match scheme {
+            "https" => {
+                let conn = TcpStream::connect((host, port))
+                    .await
+                    .expect("connect failed");
+                let tls_connector = native_tls::TlsConnector::new().expect("error init tls");
+                let connector = tokio_native_tls::TlsConnector::from(tls_connector);
+                let stream = connector
+                    .connect(host, conn)
+                    .await
+                    .expect("tls handshake failed");
+                Self::make_request(stream, method, &host, &full_path, body).await
+            }
+            _ => {
+                let stream = TcpStream::connect((host, port))
+                    .await
+                    .expect("connect failed");
+                Self::make_request(stream, method, &host, &full_path, body).await
+            }
+        }
+    }
 
-        let mut stream = connector
-            .connect(host, conn)
-            .await
-            .expect("TLS Handshake failed");
-
+    async fn make_request<T>(
+        mut stream: T,
+        method: HttpMethod,
+        host: &str,
+        full_path: &str,
+        body: Option<impl serde::Serialize>,
+    ) -> Response
+    where
+        T: AsyncRead + AsyncWrite + Unpin,
+    {
         let req = match method {
             HttpMethod::GET => format!(
                 "GET {} HTTP/1.1\r\n\
-                    Host: {}\r\n\
-                    Connection: close\r\n\
-                    \r\n",
+            Host: {}\r\n\
+            Connection: close\r\n\
+            \r\n",
                 full_path, host
             ),
             HttpMethod::POST => {
                 let res = serde_json::to_string(&body).expect("error serialize");
-                let request = format!(
-                    "POST /bot7994038141:AAFIcLqsTY_xI-eAsv32l1-JEAVTx9Y8-Ks/sendMessage HTTP/1.1\r\n\
-                    Host: {}\r\n\
-                    Content-Type: application/json\r\n\
-                    Content-Length: {}\r\n\
-                    Connection: close\r\n\
-                    \r\n\
-                    {}",
+                format!(
+                    "POST {} HTTP/1.1\r\n\
+                Host: {}\r\n\
+                Content-Type: application/json\r\n\
+                Content-Length: {}\r\n\
+                Connection: close\r\n\
+                \r\n\
+                {}",
+                    full_path,
                     host,
                     res.len(),
                     res
-                );
-                request
+                )
             }
         };
+
         stream
             .write_all(req.as_bytes())
             .await
-            .expect(format!("failed to write to {}", url).as_str());
+            .expect("failed to write request");
+
         let mut response = Vec::new();
         let mut buf = [0u8; 1024];
-
         loop {
             let n = stream.read(&mut buf).await.expect("read failed");
             if n == 0 {
@@ -79,9 +101,7 @@ impl HttpClient {
         }
 
         let res = String::from_utf8_lossy(&response);
-        let response = Response::new(&res).expect("error deserialize response");
-
-        response
+        Response::new(&res).expect("error parsing response")
     }
 }
 
