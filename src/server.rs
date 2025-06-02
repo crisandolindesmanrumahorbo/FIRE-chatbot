@@ -1,7 +1,7 @@
 use crate::cfg::get_config;
 use crate::chatbot::ChatbotService;
 use crate::http_client::{HttpClient, HttpMethod};
-use crate::tele::{GetUpdatesResp, TeleMessage};
+use crate::tele::{GetUpdatesResp, LlamaRequest, LlamaResponse, OrderForm, TeleMessage};
 use anyhow::{Context, Result};
 use request_http_parser::parser::{Method, Request};
 use std::error::Error;
@@ -35,13 +35,13 @@ impl Server {
         loop {
             tokio::select! {
                 conn = listener.accept() => {
-                    // let (mut stream, _) = conn?;
-                    // tokio::spawn(async move {
-                    //     let (reader, writer) = stream.split();
-                    //     if let Err(e) = Self::handle_client(reader, writer).await {
-                    //         eprintln!("connection error {}", e);
-                    //     }
-                    // });
+                    let (mut stream, _) = conn?;
+                    tokio::spawn(async move {
+                        let (reader, writer) = stream.split();
+                        if let Err(e) = Self::handle_client(reader, writer).await {
+                            eprintln!("connection error {}", e);
+                        }
+                    });
                 }
                 _ = &mut shutdown_rx => {
                     println!("Shutting down server...");
@@ -135,11 +135,38 @@ impl Server {
             return update_id;
         }
         update_id = chat.result[0].update_id + 1;
-        let text = format!("Echo {}", chat.result[0].message.text);
+
+        let text = format!("Echo {}", chat.result[chat.result.len() - 1].message.text);
+        let llama_url = String::from("http://127.0.0.1:11434/api/generate");
+        let llama_body = LlamaRequest {
+            model: String::from("gemma3:1b"),
+            prompt: Self::build_prompt(&text),
+            stream: false,
+        };
+        let llama_res =
+            HttpClient::fetch::<LlamaRequest>(HttpMethod::POST, llama_url, Some(llama_body)).await;
+        let llama_res_body = match llama_res.body {
+            Some(body) => body,
+            None => {
+                println!("None body");
+                return update_id;
+            }
+        };
+
+        let llama_response: LlamaResponse =
+            serde_json::from_str(&llama_res_body).expect("error deserialize body");
+        println!("Response llama:\n{:?}", llama_response.response);
+
+        let order: OrderForm = serde_json::from_str(&llama_response.response).expect("order error");
+        // TODO send order to service order
+        // handle auth
+        // packaging http client
+
         let body = TeleMessage {
             chat_id: chat.result[0].message.chat.id,
-            text,
+            text: format!("Buy \n {:?}", order),
         };
+
         let url = format!(
             "{}/bot{}/sendMessage",
             get_config().tele_url,
@@ -148,5 +175,25 @@ impl Server {
         let response = HttpClient::fetch::<TeleMessage>(HttpMethod::POST, url, Some(body)).await;
         println!("Response latest message:\n{:?}", response);
         update_id
+    }
+
+    fn build_prompt(user_input: &str) -> String {
+        format!(
+            "You are a strict trading order formatter.\n\
+        Given a user's message about a trade order, extract and return ONLY a valid JSON object like this:\n\
+        {{\"symbol\": \"SYMBOL\", \"price\": NUMBER, \"lot\": NUMBER, \"side\": \"B\" or \"S\"}}\n\n\
+        Rules:\n\
+        - Output ONLY the JSON object. No explanations or formatting like backticks.\n\
+        - Keys must be: symbol, price, lot, side.\n\
+        - Convert symbol to uppercase.\n\
+        - Only allow known trading symbols like: XBTUSD, ETHUSD, SOLUSD, DOGEUSD, SUIUSD and etc .\n\
+        - Convert human-like numbers (e.g. \"ten\", \"1 million\", \"10K\") into pure integers.\n\
+        - Use \"B\" for buy and \"S\" for sell.\n\
+        - Only return one order, even if the message mentions several.\n\
+        - If key information is missing, return {{}}.\n\n\
+        User: {}\n\
+        Output:",
+            user_input
+        )
     }
 }
