@@ -7,6 +7,7 @@ pub struct Config {
     pub llama_url: &'static str,
     pub tele_url: &'static str,
     pub tele_token: &'static str,
+    pub vapid_private_key: &'static str,
 }
 
 static CONFIG: AtomicPtr<Config> = AtomicPtr::new(ptr::null_mut());
@@ -27,6 +28,11 @@ pub fn init_config() {
         tele_token: Box::leak(
             env::var("TELE_TOKEN")
                 .expect("TELE_TOKEN must be set")
+                .into_boxed_str(),
+        ),
+        vapid_private_key: Box::leak(
+            env::var("VAPID_PRIVATE_KEY")
+                .expect("VAPID_PRIVATE_KEY must be set")
                 .into_boxed_str(),
         ),
     });
