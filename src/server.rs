@@ -1,7 +1,11 @@
 use crate::cfg::get_config;
 use crate::chatbot::ChatbotService;
 use crate::http_client::{HttpClient, HttpMethod};
-use crate::tele::{GetUpdatesResp, LlamaRequest, LlamaResponse, OrderForm, TeleMessage};
+use crate::notification::model::PushSubscription;
+use crate::notification::svc::Notification;
+use crate::tele::{
+    GetUpdatesResp, LlamaRequest, LlamaResponse, OrderForm, OrderRequest, TeleMessage,
+};
 use anyhow::{Context, Result};
 use request_http_parser::parser::{Method, Request};
 use std::error::Error;
@@ -21,7 +25,13 @@ pub const OPTIONS_CORS: &str = "HTTP/1.1 204 No Content\r\n\
             Access-Control-Allow-Headers: Content-Type\r\n\
             Access-Control-Max-Age: 86400\r\n\
             \r\n";
-pub const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n";
+pub const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\n\
+            Access-Control-Allow-Origin: *\r\n\
+            Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n\
+            Access-Control-Allow-Headers: Content-Type\r\n\
+            Access-Control-Max-Age: 86400\r\n\
+            Content-Type: application/json\r\n\
+            \r\n";
 
 pub struct Server {}
 impl Server {
@@ -64,12 +74,13 @@ impl Server {
         Reader: AsyncRead + Unpin,
         Writer: AsyncWrite + Unpin,
     {
-        let mut buffer = [0; 1024];
+        let mut buffer = [0; 2048];
         let size = reader
             .read(&mut buffer)
             .await
             .context("Failed to read stream")?;
-        if size >= 1024 {
+        if size >= 2048 {
+            println!("to large");
             let _ = writer
                 .write_all(format!("{}{}", BAD_REQUEST, "Requets too large").as_bytes())
                 .await
@@ -96,9 +107,22 @@ impl Server {
 
         // Router
         let (content, status) = match (&request.method, request.path.as_str()) {
-            (Method::OPTIONS, "/chatbot") => ("".to_string(), OPTIONS_CORS.to_string()),
+            (Method::OPTIONS, _) => ("".to_string(), OPTIONS_CORS.to_string()),
             (Method::POST, "/chatbot") => {
                 ChatbotService::chatbot_streaming(&request, &mut writer).await
+            }
+            (Method::POST, "/api/register-subscription") => {
+                Notification::register_subs(&request).await
+            }
+            (Method::POST, "/api/push") => {
+                let body = &request.body.unwrap();
+                let push_subricption = serde_json::from_str::<PushSubscription>(body).unwrap();
+
+                Notification::send_web_push(&push_subricption, get_config().vapid_private_key)
+                    .await
+                    .expect("pushjL:w");
+
+                (OK_RESPONSE.to_string(), "".to_string())
             }
             _ => (NOT_FOUND.to_string(), "404 Not Found".to_string()),
         };
