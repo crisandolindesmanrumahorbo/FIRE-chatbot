@@ -31,7 +31,7 @@ impl HttpClient {
             "https" => {
                 let conn = TcpStream::connect((host, port))
                     .await
-                    .expect("connect failed");
+                    .expect(format!("connect failed to {}", host).as_str());
                 let tls_connector = native_tls::TlsConnector::new().expect("error init tls");
                 let connector = tokio_native_tls::TlsConnector::from(tls_connector);
                 let stream = connector
@@ -43,7 +43,7 @@ impl HttpClient {
             _ => {
                 let stream = TcpStream::connect((host, port))
                     .await
-                    .expect("connect failed");
+                    .expect(format!("connect failed to {}", host).as_str());
                 Self::make_request(stream, method, &host, &full_path, body).await
             }
         }
@@ -62,9 +62,9 @@ impl HttpClient {
         let req = match method {
             HttpMethod::GET => format!(
                 "GET {} HTTP/1.1\r\n\
-            Host: {}\r\n\
-            Connection: close\r\n\
-            \r\n",
+                Host: {}\r\n\
+                Connection: close\r\n\
+                \r\n",
                 full_path, host
             ),
             HttpMethod::POST => {
