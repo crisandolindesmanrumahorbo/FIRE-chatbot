@@ -1,11 +1,7 @@
-use crate::cfg::get_config;
-use crate::chatbot::ChatbotService;
-use crate::http_client::{HttpClient, HttpMethod};
-use crate::notification::model::PushSubscription;
+use crate::chatbot_stream::svc::ChatbotStreamService;
 use crate::notification::svc::Notification;
-use crate::tele::{
-    GetUpdatesResp, LlamaRequest, LlamaResponse, OrderForm, OrderRequest, TeleMessage,
-};
+use crate::telegram::svc::Telegram;
+
 use anyhow::{Context, Result};
 use request_http_parser::parser::{Method, Request};
 use std::error::Error;
@@ -58,7 +54,7 @@ impl Server {
                     break;
                 }
                 _ = sleep(Duration::from_secs(2)) => {
-                    update_id = Self::handle_tele_polling(update_id).await;
+                    update_id = Telegram::handle_tele_polling(update_id).await;
                 }
             }
         }
@@ -74,13 +70,13 @@ impl Server {
         Reader: AsyncRead + Unpin,
         Writer: AsyncWrite + Unpin,
     {
-        let mut buffer = [0; 2048];
+        let mut buffer = [0; 4048];
         let size = reader
             .read(&mut buffer)
             .await
             .context("Failed to read stream")?;
-        if size >= 2048 {
-            println!("to large");
+        if size >= 4048 {
+            println!("too large");
             let _ = writer
                 .write_all(format!("{}{}", BAD_REQUEST, "Requets too large").as_bytes())
                 .await
@@ -109,21 +105,10 @@ impl Server {
         let (content, status) = match (&request.method, request.path.as_str()) {
             (Method::OPTIONS, _) => ("".to_string(), OPTIONS_CORS.to_string()),
             (Method::POST, "/chatbot") => {
-                ChatbotService::chatbot_streaming(&request, &mut writer).await
+                ChatbotStreamService::chatbot_streaming(&request, &mut writer).await
             }
-            (Method::POST, "/api/register-subscription") => {
-                Notification::register_subs(&request).await
-            }
-            (Method::POST, "/api/push") => {
-                let body = &request.body.unwrap();
-                let push_subricption = serde_json::from_str::<PushSubscription>(body).unwrap();
-
-                Notification::send_web_push(&push_subricption, get_config().vapid_private_key)
-                    .await
-                    .expect("pushjL:w");
-
-                (OK_RESPONSE.to_string(), "".to_string())
-            }
+            (Method::POST, "/register-subscription") => Notification::register_subs(&request).await,
+            (Method::POST, "/push-notification") => Notification::push_notification(&request).await,
             _ => (NOT_FOUND.to_string(), "404 Not Found".to_string()),
         };
 
@@ -133,91 +118,5 @@ impl Server {
             .context("Failed to write");
 
         Ok(())
-    }
-
-    pub async fn handle_tele_polling(mut update_id: i64) -> i64 {
-        println!("Listen tele to update:\n{:?}", update_id);
-        let url = format!(
-            "{}/bot{}/getUpdates?offset={}",
-            get_config().tele_url,
-            get_config().tele_token,
-            update_id
-        );
-        let response = HttpClient::fetch::<()>(HttpMethod::GET, url, None).await;
-        if response.status != 200 {
-            return update_id;
-        }
-        let body = match response.body {
-            Some(body) => body,
-            None => {
-                println!("None body");
-                return update_id;
-            }
-        };
-        let chat: GetUpdatesResp = serde_json::from_str(&body).expect("error deserialize body");
-        if chat.result.len() == 0 {
-            return update_id;
-        }
-        update_id = chat.result[0].update_id + 1;
-
-        let text = format!("Echo {}", chat.result[chat.result.len() - 1].message.text);
-        let llama_url = String::from("http://127.0.0.1:11434/api/generate");
-        let llama_body = LlamaRequest {
-            model: String::from("gemma3:1b"),
-            prompt: Self::build_prompt(&text),
-            stream: false,
-        };
-        let llama_res =
-            HttpClient::fetch::<LlamaRequest>(HttpMethod::POST, llama_url, Some(llama_body)).await;
-        let llama_res_body = match llama_res.body {
-            Some(body) => body,
-            None => {
-                println!("None body");
-                return update_id;
-            }
-        };
-
-        let llama_response: LlamaResponse =
-            serde_json::from_str(&llama_res_body).expect("error deserialize body");
-        println!("Response llama:\n{:?}", llama_response.response);
-
-        let order: OrderForm = serde_json::from_str(&llama_response.response).expect("order error");
-        // TODO send order to service order
-        // handle auth
-        // packaging http client
-
-        let body = TeleMessage {
-            chat_id: chat.result[0].message.chat.id,
-            text: format!("Buy \n {:?}", order),
-        };
-
-        let url = format!(
-            "{}/bot{}/sendMessage",
-            get_config().tele_url,
-            get_config().tele_token
-        );
-        let response = HttpClient::fetch::<TeleMessage>(HttpMethod::POST, url, Some(body)).await;
-        println!("Response latest message:\n{:?}", response);
-        update_id
-    }
-
-    fn build_prompt(user_input: &str) -> String {
-        format!(
-            "You are a strict trading order formatter.\n\
-        Given a user's message about a trade order, extract and return ONLY a valid JSON object like this:\n\
-        {{\"symbol\": \"SYMBOL\", \"price\": NUMBER, \"lot\": NUMBER, \"side\": \"B\" or \"S\"}}\n\n\
-        Rules:\n\
-        - Output ONLY the JSON object. No explanations or formatting like backticks.\n\
-        - Keys must be: symbol, price, lot, side.\n\
-        - Convert symbol to uppercase.\n\
-        - Only allow known trading symbols like: XBTUSD, ETHUSD, SOLUSD, DOGEUSD, SUIUSD and etc .\n\
-        - Convert human-like numbers (e.g. \"ten\", \"1 million\", \"10K\") into pure integers.\n\
-        - Use \"B\" for buy and \"S\" for sell.\n\
-        - Only return one order, even if the message mentions several.\n\
-        - If key information is missing, return {{}}.\n\n\
-        User: {}\n\
-        Output:",
-            user_input
-        )
     }
 }
