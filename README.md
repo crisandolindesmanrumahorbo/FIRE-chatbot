@@ -1,11 +1,11 @@
 ## How integrate Web Push Notification
-![alt text](image.png)
+![alt text](image-4.png)
 
 ## How Chatbot integration works
-![alt text](image-1.png)
+![alt text](image-3.png)
 
 ## How Telegram integration works
-![alt text](image-2.png)
+![alt text](image-5.png)
 
 ## How to run
 ```
